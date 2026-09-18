@@ -24,6 +24,10 @@ param(
     [string]$HostAddress = '127.0.0.1',
     [int]$Parallel = 1,
 
+    # Model id advertised through the API. Without it, llama-server reports the
+    # full path to the .gguf, which is a poor model id for a client to store.
+    [string]$Alias = 'bonsai-2-27b',
+
     [switch]$NoVision,
     [switch]$VisionOnCPU,
     [switch]$Kv4,
@@ -35,8 +39,12 @@ param(
     [ValidateSet('on', 'off', 'auto')]
     [string]$Reasoning = 'auto',
 
-    [ValidateSet('default', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')]
-    [string]$ReasoningEffort = 'default',
+    # This model's chat template accepts only xhigh, medium and low. Anything
+    # else raises a Jinja exception and fails the request outright - verified
+    # with 'max', which produced no output at all. xhigh is therefore the top
+    # available level, and it is the default here.
+    [ValidateSet('default', 'low', 'medium', 'xhigh')]
+    [string]$ReasoningEffort = 'xhigh',
 
     # 'none' (default) leaves thoughts inline in message.content; 'deepseek'
     # moves them to message.reasoning_content for API clients. The built-in web
@@ -89,6 +97,8 @@ $serverArgs = @(
     '--jinja'
 )
 
+if ($Alias) { $serverArgs += @('--alias', $Alias) }
+
 if ($Kv4) {
     $serverArgs += @('--cache-type-k', 'q4_0', '--cache-type-v', 'q4_0')
 }
@@ -96,9 +106,9 @@ if (-not $NoVision -and (Test-Path $Mmproj)) {
     $serverArgs += @('--mmproj', $Mmproj)
     if ($VisionOnCPU) { $serverArgs += '--no-mmproj-offload' }
 }
-if ($ReasoningBudget -ge 0) {
-    $serverArgs += @('--reasoning-budget', "$ReasoningBudget")
-}
+# Passed unconditionally so the effective setting is visible in the launch line:
+# budget -1 means unrestricted thinking, the maximum available for this model.
+$serverArgs += @('--reasoning-budget', "$ReasoningBudget")
 if ($Reasoning -ne 'auto') { $serverArgs += @('--reasoning', $Reasoning) }
 if ($ReasoningEffort -ne 'default') { $serverArgs += @('--reasoning-effort', $ReasoningEffort) }
 if ($ReasoningFormat -ne 'none') { $serverArgs += @('--reasoning-format', $ReasoningFormat) }
@@ -143,12 +153,16 @@ Write-Host "  context      : $Context tokens (KV cache ~$kvGiB GiB, $(if ($Kv4) 
 Write-Host "  slots        : $Parallel (context is shared across slots)"
 Write-Host "  vision       : $(if ($NoVision) { 'off' } else { if (Test-Path $Mmproj) { if ($VisionOnCPU) { 'on, projector in system RAM' } else { 'on, projector on GPU (+0.59 GiB)' } } else { 'no mmproj file' } })"
 Write-Host "  web UI       : $(if ($usingPatchedUi) { 'patched copy from webui\ (reasoning selector forced visible)' } else { 'built-in' })"
-$thinkDesc = @("reasoning=$Reasoning", "effort=$ReasoningEffort")
-if ($ReasoningBudget -ge 0) { $thinkDesc += "budget=$ReasoningBudget" }
+$thinkDesc = @(
+    "reasoning=$Reasoning",
+    "effort=$ReasoningEffort",
+    "budget=$(if ($ReasoningBudget -lt 0) { 'unlimited' } else { $ReasoningBudget })"
+)
 if ($ReasoningFormat -ne 'none') { $thinkDesc += "format=$ReasoningFormat" }
 if ($ReasoningPreserve) { $thinkDesc += 'preserve' }
 Write-Host "  thinking     : $($thinkDesc -join ', ')"
 Write-Host "  endpoint     : http://${HostAddress}:$Port  (chat UI, /v1/chat/completions)"
+Write-Host "  model id     : $Alias   (what clients should send as 'model')"
 Write-Host '  If VRAM is short: lower -Context, add -Kv4, or add -VisionOnCPU.'
 Write-Host ''
 

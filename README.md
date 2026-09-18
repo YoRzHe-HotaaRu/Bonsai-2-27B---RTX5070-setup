@@ -136,27 +136,45 @@ Base cost without KV is ~6.70 GiB for `PQ2_0` and ~5.58 GiB for `PTQ1_0` (measur
 GPU model buffer 6539.67 / 5395.33 MiB plus state and compute buffers); each token
 costs 64 KiB of KV in F16 or about 18 KiB with the Q4_0 cache:
 
-| Configuration | KV cache | Total, text-only | With vision on GPU |
-| --- | --- | --- | --- |
-| `PQ2_0`, 32K, F16 KV | 2.00 GiB | **8.70 GiB** ✓ | **9.29 GiB** ✓ |
-| `PQ2_0`, 64K, F16 KV | 4.00 GiB | 10.70 GiB — borderline | 11.29 GiB ✗ |
-| `PQ2_0`, 100K, Q4_0 KV | 1.76 GiB | 8.46 GiB ✓ | 9.05 GiB ✓ |
-| `PQ2_0`, 262K (max), Q4_0 KV | 4.61 GiB | 11.31 GiB ✗ | ✗ |
-| `PTQ1_0`, 32K, F16 KV | 2.00 GiB | 7.58 GiB ✓ | 8.17 GiB ✓ |
-| `PTQ1_0`, 64K, F16 KV | 4.00 GiB | 9.58 GiB ✓ | 10.17 GiB ✓ |
-| `PTQ1_0`, 100K, Q4_0 KV | 1.76 GiB | 7.34 GiB ✓ | 7.93 GiB ✓ |
-| `PTQ1_0`, 262K (max), Q4_0 KV | 4.61 GiB | 10.19 GiB — tight | ✗ |
+Real VRAM at each context size, measured with `tools\measure-context.ps1`
+(which starts the server, samples `nvidia-smi` and runs a request; desktop
+baseline ~600 MiB, card total 12227 MiB, `PQ2_0`, one slot, vision loaded):
 
-`-VisionOnCPU` moves the projector to system RAM instead, at the cost of slower
-image prefill only; text generation is unaffected. Note that `PTQ1_0` does not
-buy much VRAM over `PQ2_0` (1.1 GiB) — see §8 for why that trade is rarely worth
-taking on this card.
+| Context | KV cache | Vision | Server VRAM | Free after load |
+| --- | --- | --- | --- | --- |
+| 32,768 | F16 | GPU | 10037 MiB | 1567 MiB |
+| 65,536 | F16 | GPU | 11208 MiB | 415 MiB |
+| 65,536 | Q4_0 | GPU | 9398 MiB | 2224 MiB |
+| 98,304 | Q4_0 | GPU | 10119 MiB | 1494 MiB |
+| 131,072 | Q4_0 | GPU | 10869 MiB | 753 MiB |
+| 131,072 | Q4_0 | projector in RAM | 10018 MiB | 1619 MiB |
+| 196,608 | Q4_0 | GPU | 11241 MiB | 398 MiB |
+| 262,144 | Q4_0 | GPU | 11222 MiB | 401 MiB |
+
+`PTQ1_0` shifts every row down by about 1.1 GiB (its GPU model buffer measures
+5395.33 MiB against 6539.67 MiB), at the cost of roughly half the prefill speed
+(§8).
 
 Practical guidance:
 
-- Default: `-Context 32768`, single slot, vision projector in VRAM.
-- Want 100K+ context? Use `-Kv4` (Q4_0 KV cache, ~18 KiB/token) or switch to `-Pack PTQ1_0`.
-- If VRAM runs out: halve the context first, then `-Kv4`, then `-VisionOnCPU`.
+- **Recommended maximum: `-Context 98304 -Kv4`.** 96K with 1.5 GiB of headroom,
+  verified at depth rather than merely loaded: a 16,041-token prompt with a
+  needle at 33% depth prefilled at 1184.7 t/s (full speed, so nothing had spilled
+  to system memory) and was answered correctly. Decode at that depth measured
+  41.1 t/s against ~60 t/s shallow.
+- **Safest long-context option: `-Context 65536 -Kv4`.** 2.2 GiB spare, enough
+  that a GPU-accelerated browser cannot push the driver into paging.
+- **If you specifically want 128K:** add `-VisionOnCPU`, which keeps 1.6 GiB free.
+- **192K and 262K load, but do not run them.** They land at ~11.2 GiB with about
+  400 MiB spare, and on WDDM an over-committed allocation pages to system memory
+  instead of failing loudly, so the symptom is unexplained slowness rather than an
+  error you can act on.
+- **Above ~48K the Q4_0 cache wins outright.** 64K at F16 costs 11208 MiB while
+  96K at Q4_0 costs 10119 MiB, so the quantized cache buys 50% more context *and*
+  a gigabyte of headroom. It is a memory mechanism, not a speed one. The vendor's
+  KV-CACHE.md documents an optional mean-centering bias for quality at long
+  context (`--kv-mean-center`, built by the demo's `make_kv_bias.sh`).
+- Default remains `-Context 32768`, single slot, projector in VRAM.
 
 ---
 
@@ -177,6 +195,13 @@ Practical guidance:
 
 # throughput, both packs, markdown table -> bench-results.md
 .\scripts\bench.ps1
+
+# how much VRAM a given context actually costs (starts, measures, stops)
+.\tools\measure-context.ps1 -Context 98304 -Kv4
+.\tools\measure-context.ps1 -Context 131072 -Kv4 -VisionOnCPU
+
+# deep-context check against a running server: prefill speed + needle retrieval
+python tools\long_context_test.py --target-tokens 16000
 ```
 
 API call:
@@ -195,12 +220,12 @@ model chip. Its ladder:
 
 | Level | Behaviour |
 | --- | --- |
-| Default | whatever the server was started with |
+| Default | whatever the server was started with (now `xhigh` effort, unlimited budget) |
 | Off | thinking disabled (`enable_thinking: false`) |
 | Low | 512-token budget |
 | Medium | 2,048 |
 | High | 8,192 |
-| Max | unlimited |
+| Max | unlimited budget — the same as Default here; the effort string stays `xhigh`, since the template rejects `max` |
 
 The choice is per conversation, the default is remembered in
 `localStorage["LlamaUi.reasoningEffortDefault"]`, and each request carries
@@ -246,15 +271,59 @@ Useful without a UI, or to set the default the UI starts from:
 | Flag | Effect |
 | --- | --- |
 | `-Reasoning on|off|auto` | `--reasoning`; `auto` (default) detects from the template |
-| `-ReasoningEffort <level>` | `--reasoning-effort`: `minimal low medium high xhigh max` |
-| `-ReasoningBudget N` | `--reasoning-budget`: -1 unlimited, 0 immediate end, N cap |
+| `-ReasoningEffort <level>` | `--reasoning-effort`: this model's template accepts only `xhigh`, `low`, `medium` |
+| `-ReasoningBudget N` | `--reasoning-budget`: -1 unlimited (default), 0 immediate end, N cap |
 | `-ReasoningFormat none|deepseek` | `--reasoning-format`: `deepseek` moves thoughts to `message.reasoning_content` |
 | `-ReasoningPreserve` | keeps the reasoning trace in the full history, not just the last turn |
 
-The defaults in `start-server.ps1` reproduce the vendor's tested configuration:
-thinking on, template default effort, reasoning left inline in `content`. The web
-UI requests parsing per call, so its collapsible thinking block works either
-way; `-ReasoningFormat deepseek` is for plain API clients.
+> **Do not pass `max`, `high` or `minimal` as an effort level.** The Bonsai 2
+> chat template raises on anything outside its three supported values, and the
+> request fails outright with
+> `Jinja Exception: Unexpected reasoning effort max. Supported types are xhigh (default), medium, and low.`
+> Verified: 0 tokens generated. **`xhigh` is the top level this model offers.**
+> "Max" in the web UI picker is a different axis — an unlimited token *budget* —
+> and that is already the default.
+
+The defaults in `start-server.ps1` are thinking on, effort pinned to `xhigh`
+(the highest the template accepts), and an unlimited thinking budget, all passed
+explicitly so the launch banner states the effective configuration. A plain API
+call then returns the trace in `message.reasoning_content` (measured: 320
+characters) beside a clean `message.content` (`3`), so the web UI's collapsible
+thinking block and ordinary API clients both work as-is.
+
+### Pointing another client or agent harness at this server
+
+| Field | Value |
+| --- | --- |
+| Base URL | `http://127.0.0.1:8080/v1` |
+| API protocol | `openai-completions` (verified against `/v1/chat/completions`) |
+| API key | any non-empty placeholder; the server configures none by default |
+| Model id | `bonsai-2-27b` (set by `-Alias`; without it the API advertises the full `.gguf` path, which is a poor thing to store in a client config) |
+
+Notes for agent use, all measured on this server:
+
+- **Start the server first.** It is a local process, not a hosted endpoint; a
+  client will simply get connection refused while it is down.
+- **Tool calling is native and works**: `finish_reason: "tool_calls"` with valid
+  JSON arguments (`get_weather {"city":"Paris"}` for a Paris weather question).
+  This needs `--jinja`, which the script always passes.
+- **Thinking does not pollute `message.content`.** With thinking on, the answer
+  came back as plain `3` and the trace arrived separately in
+  `reasoning_content`; `-ReasoningBudget N` bounds it.
+- **Budget your output tokens.** Uncapped thinking is generated first, so a small
+  `max_tokens` can be spent entirely on reasoning before any answer is emitted.
+  Allow a few thousand, or cap the budget.
+- **One slot by default.** `-np 1` means a harness that fires parallel requests
+  will serialise them; `-np 2 -Context 32768 -Kv4` fits two 16K conversations in
+  the same VRAM envelope.
+- **Multimodal**: `/v1/models` reports capabilities `completion` and
+  `multimodal`, so `image_url` content parts are accepted.
+- `/v1/responses` also exists and returns a valid response object, but
+  `/v1/chat/completions` is the fully exercised path.
+
+Use `127.0.0.1` rather than `localhost` in the base URL: the server binds IPv4
+loopback, and a client that resolves `localhost` to `::1` first will fail to
+connect.
 
 ---
 
@@ -354,6 +423,8 @@ Bonsai-2 27B - RTX5070\
     ├── get_binaries.py           pinned fork release fetch + extract
     ├── probe_webui.py            fetch the served UI and its bundles
     ├── patch_webui.py            build webui\ (removes the thinking gate)
+    ├── measure-context.ps1       real VRAM cost of a context size
+    ├── long_context_test.py      deep-context prefill speed + needle retrieval
     ├── find_reasoning_ui.py      locate reasoning code inside the UI bundle
     ├── find_reasoning_ui2.py     locate where that code is mounted
     ├── test_thinking_detection.py  replay the UI's chat-template scan

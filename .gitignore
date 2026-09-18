@@ -31,7 +31,10 @@ webui-probe/
 
 # --- Logs and run output ---------------------------------------------------
 *.log
+*.err
 server-*.log
+measure-*.log
+measure-*.err
 
 # --- Downloader resume sidecars (tools\download.py) ------------------------
 # One bitmap per partially downloaded file; removed automatically on success.
