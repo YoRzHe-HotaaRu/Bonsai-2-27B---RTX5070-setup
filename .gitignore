@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Bonsai 2 27B on RTX 5070 - ignore rules
+#
+# Tracked source is small on purpose: README.md, scripts\, tools\, the measured
+# bench-results.md, and the vision test fixture. Everything else in here is
+# either downloaded or regenerated, and totals ~15 GB.
+# ---------------------------------------------------------------------------
+
+# --- Downloaded runtime (~1.1 GB) -----------------------------------------
+# PrismML llama.cpp fork binaries plus the CUDA 13.3 runtime DLLs.
+# Recreate with:  .\scripts\setup.ps1     (or python tools\get_binaries.py)
+bin/
+
+# --- Model weights (~12.8 GB) ---------------------------------------------
+# PQ2_0 6.71 GB, PTQ1_0 5.54 GB, mmproj-Q8_0 0.59 GB.
+# Recreate with:  .\scripts\setup.ps1 -AllPacks
+models/
+*.gguf
+
+# --- Release archives (~536 MB) -------------------------------------------
+# Kept locally so the binaries can be re-extracted offline. Safe to delete.
+downloads/
+
+# --- Generated copies of the web UI (~18 MB) ------------------------------
+# webui-probe\ is the UI as served by the running server; webui\ is the patched
+# copy with the reasoning-selector gate removed. Both are rebuildable:
+#   python tools\probe_webui.py   (server must be running)
+#   python tools\patch_webui.py
+webui/
+webui-probe/
+
+# --- Logs and run output ---------------------------------------------------
+*.log
+server-*.log
+
+# --- Downloader resume sidecars (tools\download.py) ------------------------
+# One bitmap per partially downloaded file; removed automatically on success.
+*.blocks
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Browser/automation profiles ------------------------------------------
+.browser-profile/
+
+# --- OS and editor cruft ---------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
