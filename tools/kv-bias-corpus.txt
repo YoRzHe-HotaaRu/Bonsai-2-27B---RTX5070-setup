@@ -1,0 +1,86 @@
+Calibration corpus for the K-cache mean-centering bias.
+
+The bias is a per-(head, channel) average of the K cache, so the corpus only needs
+to be representative text: the more the register and subject matter resemble real
+use, the better the estimate. Mixed registers are included on purpose, since a
+corpus of nothing but one style would bias the correction toward it.
+
+Technical explanation. A ternary weight matrix stores each parameter as one of
+three values, negative one, zero, or positive one, together with a single scale
+per group of one hundred twenty-eight weights. The information content of a trit
+is about 1.58 bits, so the packed representation lands near 1.75 bits per weight
+once the scale is amortised. Inference reconstructs an effective floating point
+weight by multiplying the trit by its group scale, which means the arithmetic in
+the matrix multiplication is dominated by additions and subtractions rather than
+general multiplies. The trick pays off because large language models are limited
+by memory bandwidth during generation: every token requires streaming the entire
+weight set through the processor, so shrinking the weights shrinks the time per
+token almost proportionally.
+
+Documentation style. To start the server, run the launch script from the project
+directory. It selects the weights, loads them onto the GPU, and exposes an
+OpenAI-compatible endpoint on the loopback interface. If the port is already in
+use, the script refuses to start rather than loading a second copy of the model
+into memory. The health endpoint returns a small JSON document, and the
+properties endpoint reports the effective context size, the number of slots, and
+the sampling defaults that were applied at launch.
+
+Narrative prose. The workshop smelled of sawdust and machine oil. Morning light
+came in flat across the benches, catching the dust that hung in the air, and for
+a while nobody spoke. Then the old grinder started up in the corner, complaining
+the way it always did, and the day began in earnest. She wiped her hands on her
+apron, checked the grain of the board one more time, and picked up the plane.
+
+Conversational register. So here is the thing. I tried the obvious fix first, and
+it did not work, which was annoying but also informative. The second attempt was
+closer, but it broke something else further down the line. By the third pass I
+had learned enough to stop guessing and actually measure what was happening, and
+that is when the whole problem turned out to be much smaller than it looked.
+
+Lists and procedures. First, confirm that the device is visible to the runtime.
+Second, verify that the weights load without falling back to the host. Third,
+measure the generation rate on a short prompt to establish a baseline. Fourth,
+change exactly one variable at a time, and re-measure. Fifth, record the result
+next to the configuration that produced it, because the same question will come
+back in a month and the numbers will be gone from memory by then.
+
+Code and identifiers. The function takes a path, opens the file in binary mode,
+reads a fixed size block, and yields the block to the caller. Callers are
+expected to handle short reads themselves. The cache key combines the model
+identifier, the quantisation type, and the context length, so changing any of
+those invalidates the entry. Errors are reported through the usual channel and
+are not swallowed, because a silent failure here would be worse than a crash.
+
+Questions and answers. What does the budget actually control? It caps the number
+of tokens the model may spend thinking before it begins its answer. What happens
+if the budget is smaller than the model needs? The answer is truncated, or the
+reasoning is cut short and the model responds with whatever it has concluded so
+far. Should the budget be generous or tight? Generous for difficult work, tight
+for interactive use where latency matters more than depth.
+
+Mathematics. The sum of the first n integers is n times n plus one, divided by
+two. A geometric series with ratio r converges when the absolute value of r is
+less than one, and its limit is the first term divided by one minus r. The
+derivative of the natural logarithm is one over x. These identities are old,
+unfashionable, and still enormously useful when estimating whether a proposed
+algorithm will finish in the time available.
+
+Comparison and judgement. Both approaches work, which is the least interesting
+thing about them. The first is simpler to explain and easier to debug, and it
+degrades predictably when the inputs grow. The second is faster in the common
+case and considerably harder to reason about when something goes wrong at three
+in the morning. Given the constraints here, the simpler one is the better
+engineering decision, even though the other one benchmarks better.
+
+Instructions with constraints. Keep the answer under two hundred words. Do not
+speculate about causes that were not observed. Cite the measurement rather than
+the impression. If a number is uncertain, give the range and say what would
+narrow it. Prefer the concrete example to the general claim, and when the two
+conflict, trust the example and say so.
+
+Historical summary. The technique fell out of favour for a decade, largely
+because the hardware of the time could not exploit it, and returned when memory
+bandwidth became the binding constraint rather than arithmetic throughput. The
+pattern repeats often enough to be worth naming: an idea is judged impractical
+against one generation of machines, and vindicated by the next, without anything
+about the idea itself changing.

@@ -3,6 +3,11 @@
 Status: **environment provisioned and verified on this machine.**
 GPU: NVIDIA GeForce RTX 5070, 12226 MiB, driver 591.86, compute capability 12.0 (Blackwell `sm_120`).
 
+> **Just want to run it well?** `RECIPE.md` is the tuned, measured, one-command
+> configuration (and it is already the default in `scripts\start-server.ps1`).
+> This README is the longer record: what the model is, why the runtime must be
+> the PrismML fork, and how each number was established.
+
 ---
 
 ## 1. The short answer
@@ -42,7 +47,7 @@ calling 74.92 vs 76.74.
 | File | Size | Bits/weight | Verdict |
 | --- | --- | --- | --- |
 | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7.21 GB | 2.13 | **Primary pick.** One trit per 2-bit slot: cheaper to unpack, faster prefill everywhere, and the vendor's recommended pack for Blackwell decode. |
-| `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB | 1.75 | Dense trits: 17% less weight traffic per step, more arithmetic per step. The vendor says it wins where memory is the binding constraint (Ada, L4); **measured here it loses on both axes to `PQ2_0`** (§8), so its only value on this card is the 1.1 GiB of VRAM it saves for longer contexts. |
+| `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB | 1.75 | **Measured, rejected, deleted.** Dense trits: 17% less weight traffic per step, more arithmetic per step. On this card it loses on both axes to `PQ2_0` (pp512 521 vs 1284, tg128 51.3 vs 61.1), so its only theoretical value was the 1.1 GiB of VRAM it saves. Re-fetch with `setup.ps1 -AllPacks` if that ever matters. |
 | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | 0.63 GB | — | Optional vision tower. Loaded only when images are sent (0.59 GiB VRAM, or keep it in RAM). |
 | `Ternary-Bonsai-2-27B-mmproj-BF16.gguf` | 0.93 GB | — | Reference vision tower. Larger, no quality benefit worth the VRAM here. |
 | `Ternary-Bonsai-2-27B-F16.gguf` | 53.8 GB | 16.0 | **Do not download.** Needs ~54 GB of VRAM. It exists as the accuracy reference. |
@@ -171,10 +176,11 @@ Practical guidance:
   error you can act on.
 - **Above ~48K the Q4_0 cache wins outright.** 64K at F16 costs 11208 MiB while
   96K at Q4_0 costs 10119 MiB, so the quantized cache buys 50% more context *and*
-  a gigabyte of headroom. It is a memory mechanism, not a speed one. The vendor's
-  KV-CACHE.md documents an optional mean-centering bias for quality at long
-  context (`--kv-mean-center`, built by the demo's `make_kv_bias.sh`).
-- Default remains `-Context 32768`, single slot, projector in VRAM.
+  a gigabyte of headroom. Measured cost against F16: 59.49 vs 60.35 t/s at depth
+  0, about 1.4%, so it is very nearly free.
+- **Current default: `-Context 65536` with the Q4_0 cache**, single slot, projector
+  in VRAM (10408 MiB in use with the desktop running). Use `-F16Kv` to force an F16
+  cache, which only fits at 32K context or less.
 
 ---
 
@@ -186,9 +192,11 @@ Practical guidance:
 .\scripts\setup.ps1 -AllPacks          # also fetch PTQ1_0 for the A/B
 
 # chat UI + OpenAI-compatible API on http://127.0.0.1:8080
+# defaults: 64K context, Q4_0 KV cache, thinking effort medium, 8192 thinking budget
 .\scripts\start-server.ps1
-.\scripts\start-server.ps1 -Pack PTQ1_0 -Context 65536 -Kv4
-.\scripts\start-server.ps1 -VisionOnCPU -ReasoningBudget 2048
+.\scripts\start-server.ps1 -Pack PTQ1_0 -Context 32768 -F16Kv
+.\scripts\start-server.ps1 -Context 98304 -VisionOnCPU
+.\scripts\start-server.ps1 -ReasoningBudget 2048 -PatchedUi
 
 # one-shot prompt (no server)
 .\scripts\run-cli.ps1 -Prompt "Explain ternary quantization in two sentences."
@@ -220,12 +228,12 @@ model chip. Its ladder:
 
 | Level | Behaviour |
 | --- | --- |
-| Default | whatever the server was started with (now `xhigh` effort, unlimited budget) |
+| Default | whatever the server was started with (now `medium` effort, 8192 budget) |
 | Off | thinking disabled (`enable_thinking: false`) |
 | Low | 512-token budget |
 | Medium | 2,048 |
-| High | 8,192 |
-| Max | unlimited budget — the same as Default here; the effort string stays `xhigh`, since the template rejects `max` |
+| High | 8,192 (the current server default) |
+| Max | unlimited budget; the effort string stays a supported value, since the template rejects `max` and `high` |
 
 The choice is per conversation, the default is remembered in
 `localStorage["LlamaUi.reasoningEffortDefault"]`, and each request carries
@@ -284,12 +292,13 @@ Useful without a UI, or to set the default the UI starts from:
 > "Max" in the web UI picker is a different axis — an unlimited token *budget* —
 > and that is already the default.
 
-The defaults in `start-server.ps1` are thinking on, effort pinned to `xhigh`
-(the highest the template accepts), and an unlimited thinking budget, all passed
-explicitly so the launch banner states the effective configuration. A plain API
-call then returns the trace in `message.reasoning_content` (measured: 320
-characters) beside a clean `message.content` (`3`), so the web UI's collapsible
-thinking block and ordinary API clients both work as-is.
+The defaults in `start-server.ps1` are thinking on, effort `medium` (the vendor's
+shorter/faster setting), and an 8192-token thinking budget, which is the same
+thing the web UI picker calls "High". All three are passed explicitly, so the
+launch banner always states the effective configuration. A plain API call then
+returns the trace in `message.reasoning_content` alongside a clean
+`message.content`, so the web UI's collapsible thinking block and ordinary API
+clients both work as-is.
 
 ### Pointing another client or agent harness at this server
 
@@ -370,6 +379,51 @@ and 3931.9 t/s `pp512` on `PQ2_0`. Against those, this machine sits at ~48% of
 the 5090's decode and ~33% of its prefill — consistent with roughly 1/3 of the
 SM count and 672 GB/s versus 1792 GB/s of bandwidth.
 
+### Decode ceiling, and the one thing that beats it
+
+Bonsai 2 27B must move 6.70 GiB of weights through the GPU for every token it
+emits. At this card's 672 GB/s that is a hard ceiling of about 93 t/s even at
+100% of peak bandwidth, and ternary kernels do not reach 100%. Measured:
+
+| Configuration | pp512 (t/s) | tg128 (t/s) |
+| --- | --- | --- |
+| `PQ2_0`, F16 KV, depth 0 | 1262.40 | **60.35** |
+| `PQ2_0`, Q4_0 KV, depth 0 | 1255.69 | 59.49 |
+| `PQ2_0`, F16 KV, depth 16384 | 1087.05 | 53.44 |
+
+Through the server after a 16K prefill, decode measured 41.1 t/s, the rest of the
+gap being real-world attention over a filled context.
+
+So **60 t/s is the practical ceiling for this model on a 5070, and 70-80 t/s is
+not reachable**: it would require 79-90% of theoretical peak bandwidth. Two
+things that do *not* help: the KV cache dtype (worth 1.4%, see §5) and
+speculative decoding, which the vendor does not ship for Bonsai 2 at all. The
+demo's own model downloader states it: *"the projector ships in the same repo;
+Bonsai 2 has no dspark drafter."* That drafter exists only for the previous
+generation, which is where the documented 1.8-2x applies.
+
+If 70-80 t/s is a requirement, the lever is a smaller model. The previous
+generation 1-bit `Bonsai-27B-Q1_0` (3.53 GiB) was fetched and measured:
+
+| Model | Weights | tg128 (t/s) | Counting probe ("r"s in strawberry) |
+| --- | --- | --- | --- |
+| Bonsai 2 27B `PQ2_0` | 6.70 GiB | 60.35 | 2/2 correct |
+| Bonsai 27B `Q1_0` | 3.53 GiB | **79.19** | 2/3 correct |
+
+It clears the target and is stable as a server (76.5 t/s measured through
+`/v1/chat/completions`, model id `bonsai-1bit-27b`, 6964 MiB VRAM at 32K), but it
+is a generation older on an older base (Qwen3.6-27B rather than Qwen3.8-27B) at
+about 1.125 bits per weight, and the wobble on that counting probe is the kind of
+failure Bonsai 2 does not show. Treat it as the speed option, not the quality
+option. It also thinks by default, so give requests a real output budget.
+
+```powershell
+# 1-bit speed option (previous generation), port 8081
+.\bin\cuda\llama-server.exe -m .\models\bonsai1-27B\Bonsai-27B-Q1_0.gguf `
+  -ngl 99 -fa on -c 32768 -np 1 --alias bonsai-1bit-27b --jinja `
+  --host 127.0.0.1 --port 8081
+```
+
 ---
 
 ## 9. Operating notes
@@ -379,9 +433,15 @@ SM count and 672 GB/s versus 1792 GB/s of bandwidth.
   `presence_penalty 1.5`. These are baked into the scripts and into the GGUF
   metadata (`general.sampling.*`), so a client that reads model defaults agrees.
 - **It is a reasoning model.** Thinking is on by default; most of a slow answer is
-  reasoning tokens, not prefill. `-ReasoningBudget 2048` (or the lightbulb picker
-  in the built-in web UI) is the lever. Reasoning effort defaults to `xhigh`;
-  `low` is not supported and behaves like `xhigh`.
+  reasoning tokens, not prefill. The lever is the thinking budget
+  (`-ReasoningBudget 2048`, or the lightbulb picker in the built-in web UI), not
+  the effort: thinking length tracks the budget. Effort defaults to `medium`;
+  `xhigh`, `medium` and `low` are the only accepted values, and `high`/`max` make
+  the template raise, failing the request with zero tokens generated.
+- **Truncated replies are a client-side output cap, not a server limit.** Thinking
+  tokens count against the client's `max_tokens`, so a cap at or below the
+  thinking length can return no answer at all. Measured cases and the three fixes
+  are in `RECIPE.md` section 6.
 - **Reasoning is dropped from history by default.** The server logs a hint at
   startup that the chat template supports preserving it — add `--reasoning-preserve`
   (pass it through `start-server.ps1` as an extra argument) if you want earlier
@@ -405,11 +465,13 @@ SM count and 672 GB/s versus 1792 GB/s of bandwidth.
 ```
 Bonsai-2 27B - RTX5070\
 ├── README.md                     this document
+├── RECIPE.md                     tuned one-command configuration, measured
 ├── bench-results.md              generated by scripts\bench.ps1
 ├── test-image.png                sample used for the vision check (§8)
 ├── server-patched.log            log of the most recent server run
 ├── bin\cuda\                     PrismML fork binaries + CUDA 13.3 DLLs
-├── models\bonsai2-27B\           PQ2_0, PTQ1_0, mmproj-Q8_0
+├── models\bonsai2-27B\           PQ2_0, mmproj-Q8_0, kv-mean-center.gguf
+├── models\bonsai1-27B\           previous-gen 1-bit 27B (speed option, ~79 t/s)
 ├── webui\                        patched UI, served when -PatchedUi is used
 ├── webui-probe\                  raw copy of the built-in UI + bundles (patch source)
 ├── downloads\                    the release zips (safe to delete, ~536 MB)
@@ -421,6 +483,7 @@ Bonsai-2 27B - RTX5070\
 └── tools\
     ├── download.py               stdlib parallel/resumable downloader + SHA-256
     ├── get_binaries.py           pinned fork release fetch + extract
+    ├── kv-bias-corpus.txt        calibration text for the KV mean-centering bias
     ├── probe_webui.py            fetch the served UI and its bundles
     ├── patch_webui.py            build webui\ (removes the thinking gate)
     ├── measure-context.ps1       real VRAM cost of a context size

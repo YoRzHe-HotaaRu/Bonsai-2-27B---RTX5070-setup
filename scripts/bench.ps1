@@ -4,8 +4,10 @@
 
 .DESCRIPTION
     Reports prompt processing (pp) and token generation (tg) throughput, the same
-    two numbers the model card publishes, so results here are directly comparable
-    with the vendor table. Writes a markdown table to bench-results.md.
+    two numbers the model card publishes, so results here are comparable with the
+    vendor table. Flags match the shipped recipe (RECIPE.md): Q4_0 KV cache and
+    batch 8192 / ubatch 2048, both measured best on this card. Writes a markdown
+    table to bench-results.md.
 
 .EXAMPLE
     .\scripts\bench.ps1
@@ -41,6 +43,11 @@ foreach ($m in $models) { $modelArgs += @('-m', $m.FullName) }
 $benchArgs = $modelArgs + @(
     '-ngl', '99',
     '-fa', '1',
+    # recipe configuration: Q4_0 KV cache, batch 8192 / ubatch 2048
+    '-ctk', 'q4_0',
+    '-ctv', 'q4_0',
+    '-b', '8192',
+    '-ub', '2048',
     '-p', "$PromptTokens",
     '-n', "$GenTokens",
     '-r', "$Repetitions",

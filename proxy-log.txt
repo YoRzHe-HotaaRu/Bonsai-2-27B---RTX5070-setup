@@ -1,0 +1,9 @@
+logging proxy on http://127.0.0.1:8081  ->  http://127.0.0.1:8080
+point the client at this port instead of the server; Ctrl+C to stop
+appending to G:\DeepSeek-Platform-New\Bonsai-2 27B - RTX5070\proxy-log.txt
+REQ  14:14:35 GET /health | 0 bytes
+RESP 14:14:35 | 15 bytes | 
+REQ  14:14:35 /v1/chat/completions | max_tokens=300 stream=False | {"model": "bonsai-2-27b", "max_tokens": 300, "chat_template_kwargs": {"enable_thinking": false}, "messages": 1}
+RESP 14:14:35 | 616 bytes | "finish_reason":"stop","index":0,"messag | tokens=2
+REQ  14:14:35 /v1/chat/completions | max_tokens=<ABSENT -> server default -1> stream=True | {"model": "bonsai-2-27b", "stream": true, "chat_template_kwargs": {"enable_thinking": false}, "messages": 1}
+RESP 14:14:35 | 3933 bytes | "finish_reason":"stop","index":0,"delta"
